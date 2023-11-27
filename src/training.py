@@ -104,5 +104,6 @@ if __name__ == "__main__":
     model = make_u2net()                                # <<< CHANGE MODEL HERE!! resnest101(), resnest200(), make_unet() or make_u2net()
     criterion = nn.CrossEntropyLoss()                   # <<< CHANGE LOSS HERE!! nn.CrossEntropyLoss() or nn.BCELoss()
     optimizer = optim.Adam(model.parameters(), lr=1e-5) # <<< CHANGE OPTIMIZER HERE!! optim.Adam() or optim.SGD()
+    epochs = 100                                        # <<< CHANGE EPOCHS HERE!!
     
-    model = train(model, tload, vload, optimizer, criterion=criterion, epo_num=1) 
+    model = train(model, tload, vload, optimizer, criterion=criterion, epo_num=epochs)
