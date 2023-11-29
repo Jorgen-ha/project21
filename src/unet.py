@@ -42,7 +42,10 @@ class UNET(nn.Module):
         #bottle
         self.bottleneck = DoubleConv(features[-1], features[-1]*2)  #1024
         #final FF
-        self.final_conv = nn.Conv2d(features[0], out_channels, kernel_size=1)
+        self.final_conv = nn.Sequential(
+            nn.Conv2d(features[0], out_channels, kernel_size=1),
+            nn.Sigmoid(),
+        )
 
     def forward(self, x):
         skip_connections = []

@@ -7,7 +7,7 @@ from tqdm import trange
 from datetime import datetime
 from data_process import getDataloaders
 # Import from locally
-from resnest import resnest50, resnest101, resnest200
+from resnest import make_uresnet
 from unet import make_unet
 from u2net import make_u2net, multi_bce_loss_fusion
 
@@ -55,7 +55,7 @@ def train(model, train_dataloader, val_dataloader, optimizer, criterion=None, ep
 
             loss.backward()
             optimizer.step()
-
+            
             # save loss of each iteration
             iter_loss = loss.item()
             all_train_iter_loss.append(iter_loss)
@@ -100,10 +100,11 @@ def train(model, train_dataloader, val_dataloader, optimizer, criterion=None, ep
 
 
 if __name__ == "__main__":
-    tload, vload = getDataloaders('../data/small_dataset.npy', batch_size=6)
-    model = make_u2net()                                # <<< CHANGE MODEL HERE!! resnest101(), resnest200(), make_unet() or make_u2net()
-    criterion = nn.CrossEntropyLoss()                   # <<< CHANGE LOSS HERE!! nn.CrossEntropyLoss() or nn.BCELoss()
-    optimizer = optim.Adam(model.parameters(), lr=1e-5) # <<< CHANGE OPTIMIZER HERE!! optim.Adam() or optim.SGD()
-    epochs = 100                                        # <<< CHANGE EPOCHS HERE!!
+    tload, vload = getDataloaders('../data/small_dataset.npy', batch_size=2)
+    model = make_uresnet()                                # <<< CHANGE MODEL HERE!! make_uresnest(enc_layers="50"/"101"/"200"),
+                                                          # make_unet() or make_u2net()
+    criterion = nn.BCELoss()                              # <<< CHANGE LOSS HERE!! nn.CrossEntropyLoss() or nn.BCELoss()
+    optimizer = optim.SGD(model.parameters(), lr=1e-2, momentum=0.7) # <<< CHANGE OPTIMIZER HERE!! optim.Adam() or optim.SGD()
+    epochs = 100                                          # <<< CHANGE EPOCHS HERE!!
     
-    model = train(model, tload, vload, optimizer, criterion=criterion, epo_num=epochs)
+    model = train(model, tload, vload, optimizer, criterion=criterion, epo_num=epochs) 

@@ -1,47 +1,5 @@
-# Script to train ResNeSt model
 import torch
 import torch.nn as nn
-import numpy as np
-from torchvision import transforms
-from torch.utils.data import Dataset, DataLoader, random_split
-from sklearn.preprocessing import OneHotEncoder
-import torch.optim as optim
-from tqdm import trange
-from datetime import datetime
-
-
-def onehot(data):
-    categories = [[0, 10, 20, 30, 40, 50, 60, 70, 80, 90]]
-    encoder = OneHotEncoder(categories=categories, sparse_output=False)
-    data_flat = data.ravel()
-    onehot_encoded = encoder.fit_transform(data_flat.reshape(-1, 1))
-    onehot_encoded = onehot_encoded.reshape(256, 256, -1)
-    
-    return onehot_encoded
-
-class MyDataset(Dataset):
-    def __init__(self, data, transform=None):
-        self.data = data
-        self.transform = transform
-
-    def __len__(self):
-        return len(self.data)
-
-    def __getitem__(self, index):
-        sample = self.data[index]
-        image = sample[:,:,:3]  #rgb image
-        label = sample[:,:,3]  #label image
-
-        # change date type form numpy to tensor
-        if self.transform is not None:
-            image = self.transform(image)
-
-        label = onehot(label) # (n,256,256,10)
-        label = label.transpose(2,0,1)#(n,10, 256,256)
-        label = torch.FloatTensor(label)
-
-        return image, label
-
 class rSoftmax(nn.Module):
     """rSoftmax module, as per the paper"""
     def __init__(self, radix, cardinality):
@@ -110,7 +68,6 @@ class SplitAttention(nn.Module):
         
         return out.contiguous()
     
-    
 class Block(nn.Module):     # ResNeSt block (bottleneck)
     expansion = 4
     def __init__(self, in_c, out_c, radix=2, cardinality=1, downsample=None, stride=1):
@@ -151,7 +108,9 @@ class Block(nn.Module):     # ResNeSt block (bottleneck)
         x = self.relu(x)
         
         x = self.conv2(x)
-        # x = self.bn2(x)
+        if self.radix == 0:
+            x = self.bn2(x)
+            x = self.relu(x)
         
         x = self.conv3(x)
         x = self.bn3(x)
@@ -163,7 +122,9 @@ class Block(nn.Module):     # ResNeSt block (bottleneck)
         x = self.relu(x)
         
         return x
-class ResNeSt(nn.Module):
+        
+        
+class ResNeSt(nn.Module): # Encoder
     def __init__(self, name, block, layers, img_c, n_classes):
         """Initialises the ResNeSt model
 
@@ -176,7 +137,6 @@ class ResNeSt(nn.Module):
         self.cardinality = 1
         self.group_width = 64
         self.name = f"ResNeSt{name}"
-
         
         super().__init__()
         # Initial layer, same as for ResNet this is NOT a ResNeSt layer
@@ -191,18 +151,7 @@ class ResNeSt(nn.Module):
         self.layer3 = self._make_layer(block, layers[2], out_c=256, radix=2, cardinality=1, stride=2)
         self.layer4 = self._make_layer(block, layers[3], out_c=512, radix=2, cardinality=1, stride=2)
         
-        self.dropout = nn.Dropout(p=0.2)    # as per paper
-        self.final_conv = nn.Conv2d(512*block.expansion, n_classes, kernel_size=1)
-        self.upsample = nn.Upsample((256, 256), mode='bilinear', align_corners=True)
-        
-        for m in self.modules():
-            if isinstance(m, nn.Conv2d):
-                n = m.kernel_size[0] * m.kernel_size[1] * m.out_channels # He initialisation
-                m.weight.data.normal_(0, np.sqrt(2. / n))
-            elif isinstance(m, nn.BatchNorm2d):
-                m.weight.data.fill_(1)  # Initialise BN as per paper
-                m.bias.data.zero_()
-        
+
     def _make_layer(self, block, n_blocks, out_c, radix, cardinality, stride):
         """Internal function to create the ResNeSt layers
 
@@ -232,125 +181,91 @@ class ResNeSt(nn.Module):
         return nn.Sequential(*layers)
     
     def forward(self, x):
-
+        skips = []
         x = self.conv1(x)   # initial layer
         x = self.bn1(x)
         x = self.relu(x)
         x = self.maxpool(x)    
-
-        x = self.layer1(x) # ResNeSt layers
-        x = self.layer2(x)
-        x = self.layer3(x)
-        x = self.layer4(x)
         
-        x = self.dropout(x)
+        # ResNeSt layers
+        x = self.layer1(x); skips.append(x); 
+        x = self.layer2(x); skips.append(x);
+        x = self.layer3(x); skips.append(x);
+        x = self.layer4(x); skips.append(x);
+        
+        return skips
 
-        x = self.final_conv(x)
-        x = self.upsample(x)
+
+def resnest50(in_channels=3, out_channels=10):
+  return ResNeSt('50', Block, [3, 4, 6, 3], img_c=in_channels, n_classes=out_channels)
+
+def resnest101(in_channels=3, out_channels=10):
+  return ResNeSt('101', Block, [3, 4, 23, 3], img_c=in_channels, n_classes=out_channels)
+
+def resnest200(in_channels=3, out_channels=10):
+  return ResNeSt('200', Block, [3, 24, 36, 3], img_c=in_channels, n_classes=out_channels)
+
+def make_resnest(layers="50"):
+    if layers == "50":
+        return resnest50()
+    elif layers == "101":
+        return resnest101()
+    elif layers == "200":
+        return resnest200()
+    else:
+        raise Exception("Invalid layers for ResNeSt")
+
+#Architect of U_net - decoder
+class DoubleConv(nn.Module):
+    def __init__(self, in_channels, out_channels):
+        super(DoubleConv, self).__init__()
+        self.conv = nn.Sequential(
+            nn.Conv2d(in_channels, out_channels, kernel_size=3, stride=1, padding=1, bias = False),
+            nn.BatchNorm2d(out_channels),
+            nn.ReLU(inplace=True),
+            nn.Conv2d(out_channels, out_channels, kernel_size=3, stride=1, padding=1, bias = False),
+            nn.BatchNorm2d(out_channels),
+            nn.ReLU(inplace=True),
+        )
+
+    def forward(self, x):
+        return self.conv(x)
+
+class URESnet(nn.Module):
+    def __init__(self, n_classes=10, encoder_layers="50"):
+        super().__init__()
+        self.name = "URESnet"
+        self.encoder = make_resnest(encoder_layers)
+        self.ups = nn.ModuleList()
+        self.extracters = nn.ModuleList()
+        
+        # Four skip layers
+        for feature in [2048, 1024, 512, 256]:
+            self.ups.append(nn.ConvTranspose2d(feature, feature//2, kernel_size=2, stride=2))
+            self.extracters.append(DoubleConv(feature*2, feature))
+            
+        # Going from 256 to 64 channels ???
+        self.final = nn.Sequential(
+            DoubleConv(128, 64),
+            nn.ConvTranspose2d(64, 64, kernel_size=2, stride=2),
+            nn.Conv2d(64, n_classes, kernel_size=1),
+            nn.Sigmoid()
+        )
+        
+    def forward(self, x):
+        skips = self.encoder(x)
+        x = skips[-1]
+        skips = skips[::-1] #reverse the list
+
+        for i in range(len(self.ups)):
+            skip = skips[i]
+            x = torch.cat((skip, x), dim = 1)
+            x = self.extracters[i](x)
+            x = self.ups[i](x)
+            
+        x = self.final(x)  # goes from [2, 128, 128, 128] --> [2, 10, 256, 256]
         
         return x
     
-class DiceLoss(nn.Module):
-    def forward(self, input, target):
-        smooth = 1.
-        iflat = input.view(-1)
-        tflat = target.view(-1)
-        intersection = (iflat * tflat).sum()
-        loss = 1 - ((2. * intersection + smooth) /
-                    (iflat.sum() + tflat.sum() + smooth))
-        return loss
-    
-    
-def resnest50(in_channels=3, out_channels=10):
-    return ResNeSt("50", Block, [3, 4, 6, 3], img_c=in_channels, n_classes=out_channels)
-
-def resnest101(in_channels=3, out_channels=10):
-    return ResNeSt("101", Block, [3, 4, 23, 3], img_c=in_channels, n_classes=out_channels)
-
-def resnest200(in_channels=3, out_channels=10):
-    return ResNeSt("200", Block, [3, 24, 36, 3], img_c=in_channels, n_classes=out_channels)
-    
-    
-def train(train_dataloader, val_dataloader, epo_num=10, model_name='resNeSt50'):
-
-    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-
-    model = resnest50(in_channels = 3, out_channels = 10)#input is rgb output is 10 classes
-    model = model.to(device)
-    criterion = nn.CrossEntropyLoss().to(device) #loss
-    optimizer = optim.Adam(model.parameters(), lr=1e-5) #optimizer
-    # optimizer = optim.SGD(model.parameters(), lr=1e-2, momentum=0.7) #optimizer
-    
-    
-    all_train_iter_loss = []
-    all_val_iter_loss = []
-
-    # start timing
-    prev_time = datetime.now()
-    for epo in trange(epo_num):
-
-        train_loss = 0
-        model.train()
-        for _, (car, car_msk) in enumerate(train_dataloader):
-            car = car.to(device)            # car.shape is torch.Size([12, 3, 256, 256])
-            car_msk = car_msk.to(device)    # car_msk.shape is torch.Size([12, 10, 256, 256])    
-                                                    
-            optimizer.zero_grad()
-            output = model(car)
-            loss = criterion(output, car_msk)
-            loss.backward()
-            iter_loss = loss.item()
-            all_train_iter_loss.append(iter_loss)
-            train_loss += iter_loss
-            optimizer.step()
-        
-        # evaluate each 5 epo
-        if np.mod(epo, 5) == 0:
-            val_loss = 0
-            model.eval()
-
-            with torch.no_grad():
-                for _, (car, car_msk) in enumerate(val_dataloader):
-                    car = car.to(device)
-                    car_msk = car_msk.to(device)
-                    optimizer.zero_grad()
-                    output = model(car) 
-                    loss = criterion(output, car_msk)
-                    iter_loss = loss.item()
-                    all_val_iter_loss.append(iter_loss)
-                    val_loss += iter_loss
-            
-            # save model each 5 epoch
-            filename = f'{model_name}_{epo}_loss_trian_{round(train_loss/len(train_dataloader), 5)}\
-                         _val_{round(val_loss/len(val_dataloader), 5)}.pt'
-            torch.save(model, filename)
-            print(f"\nSaving {filename}")
-
-        cur_time = datetime.now()
-        h, remainder = divmod((cur_time - prev_time).seconds, 3600)
-        m, s = divmod(remainder, 60)
-        time_str = "Time %02d:%02d:%02d" % (h, m, s)
-        prev_time = cur_time
-
-        print(f'\nepoch: {epo}/{epo_num}')
-        print(f'\nepoch train loss = {train_loss/len(train_dataloader)}\nepoch val loss = \
-                {val_loss/len(val_dataloader)}, {time_str}')
-
-    return model
-
-
-# if __name__ == "__main__":
-#     dataset = np.load('/zhome/4e/8/181483/deep-learning-project/dataset.npy') # Load dataset
-#     transform = transforms.Compose([transforms.ToTensor(),
-#                                     transforms.Normalize(mean=[0.485, 0.456, 0.406], 
-#                                                           std=[0.229, 0.224, 0.225])]) #normalization
-#     train_set = MyDataset(dataset, transform)
-#     train_size = int(0.95 * len(train_set))   # 95% for train
-#     val_size = len(train_set) - train_size    # 5% for validation
-#     train_dataset, val_dataset = random_split(train_set, [train_size, val_size])
-
-#     tload = DataLoader(train_dataset, batch_size=64, shuffle=True, num_workers=2)
-#     vload = DataLoader(val_dataset, batch_size=64, shuffle=True, num_workers=2)
-    
-#     model = train(tload, vload, epo_num=6, model_name='resNeSt50') 
-    
+def make_uresnet(layers="50"):
+    return URESnet(encoder_layers=layers)
