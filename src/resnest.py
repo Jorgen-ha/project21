@@ -1,5 +1,6 @@
 import torch
 import torch.nn as nn
+
 class rSoftmax(nn.Module):
     """rSoftmax module, as per the paper"""
     def __init__(self, radix, cardinality):
@@ -123,34 +124,90 @@ class Block(nn.Module):     # ResNeSt block (bottleneck)
         
         return x
         
+
+class Block(nn.Module):     # ResNeSt block (bottleneck)
+    expansion = 4
+    def __init__(self, in_c, out_c, radix=2, cardinality=1, downsample=None, stride=1):
+        """Initialises the ResNeSt block
+
+        Args:
+            in_c (int): input channels
+            out_c (int): output channels
+            radix (int): number of splits within a cardinal group, denoted R
+            cardinality (int): number of cardinal groups, denoted K
+            downsample (_type_, optional): _description_. Defaults to None.
+            stride (int, optional): stride. Defaults to 1.
+        """
+        super().__init__()
+        group_width = int(out_c * cardinality)
+        self.conv1 = nn.Conv2d(in_c, group_width, kernel_size=1, bias=False)
+        self.bn1 = nn.BatchNorm2d(group_width)
+        self.radix = radix
+        if radix >= 1:  
+            self.conv2 = SplitAttention(group_width, group_width, kernel_size=3, radix=radix, 
+                                        cardinality=cardinality, bias=False, padding=1, stride=stride)
+        else:
+            self.conv2 = nn.Conv2d(group_width, group_width, kernel_size=3, 
+                                   cardinality=cardinality, bias=False, padding=1, stride=stride)
+            self.bn2 = nn.BatchNorm2d(group_width)
+
+        self.conv3 = nn.Conv2d(group_width, out_c*self.expansion, kernel_size=1, bias=False)
+        self.bn3 = nn.BatchNorm2d(out_c*self.expansion)
+
+        self.relu = nn.ReLU(inplace=True)
+        self.downsample = downsample
         
+
+    def forward(self, x):
+        residual = x
+        x = self.conv1(x)
+        x = self.bn1(x)
+        x = self.relu(x)
+        
+        x = self.conv2(x)
+        if self.radix == 0:
+            x = self.bn2(x)
+            x = self.relu(x)
+        
+        x = self.conv3(x)
+        x = self.bn3(x)
+        
+        if self.downsample is not None:
+            residual = self.downsample(residual)
+
+        x += residual
+        x = self.relu(x)
+        
+        return x
+
+
 class ResNeSt(nn.Module): # Encoder
-    def __init__(self, name, block, layers, img_c, n_classes):
+    def __init__(self, name, block, layers, img_c):
         """Initialises the ResNeSt model
 
         Args:
             block (nn.Module): The ResNeSt block
             layers (list): holding the number of blocks in each layer
             img_c (int): input channels
-            n_classes (int): output classes 
+            n_classes (int): output classes
         """
         self.cardinality = 1
         self.group_width = 64
         self.name = f"ResNeSt{name}"
-        
+
         super().__init__()
         # Initial layer, same as for ResNet this is NOT a ResNeSt layer
         self.conv1 = nn.Conv2d(img_c, self.group_width, kernel_size=7, stride=2, padding=3, bias=False)
         self.bn1 = nn.BatchNorm2d(self.group_width)
         self.relu = nn.ReLU(inplace=True)
         self.maxpool = nn.MaxPool2d(kernel_size=3, stride=2, padding=1)
-        
+
         # ResNeSt layers
-        self.layer1 = self._make_layer(block, layers[0], out_c=64, radix=2, cardinality=1, stride=1)
-        self.layer2 = self._make_layer(block, layers[1], out_c=128, radix=2, cardinality=1, stride=2)
-        self.layer3 = self._make_layer(block, layers[2], out_c=256, radix=2, cardinality=1, stride=2)
-        self.layer4 = self._make_layer(block, layers[3], out_c=512, radix=2, cardinality=1, stride=2)
-        
+        self.layer1 = self._make_layer(block, layers[0], out_c=32, radix=2, cardinality=1, stride=1)
+        self.layer2 = self._make_layer(block, layers[1], out_c=64, radix=2, cardinality=1, stride=2)
+        self.layer3 = self._make_layer(block, layers[2], out_c=128, radix=2, cardinality=1, stride=2)
+        self.layer4 = self._make_layer(block, layers[3], out_c=256, radix=2, cardinality=1, stride=2)
+
 
     def _make_layer(self, block, n_blocks, out_c, radix, cardinality, stride):
         """Internal function to create the ResNeSt layers
@@ -164,46 +221,46 @@ class ResNeSt(nn.Module): # Encoder
             stride (int): 1 or 2 depending on the layer
         """
         downsample = None
-        
+
         if stride != 1 or self.group_width != out_c * block.expansion:
             down_layers = []
-            down_layers.append(nn.Conv2d(self.group_width, out_c * block.expansion, kernel_size=1, 
+            down_layers.append(nn.Conv2d(self.group_width, out_c * block.expansion, kernel_size=1,
                                          stride=stride, bias=False))
             down_layers.append(nn.BatchNorm2d(out_c * block.expansion))
             downsample = nn.Sequential(*down_layers)
-            
+
         layers = []
         layers.append(block(self.group_width, out_c, radix, cardinality, downsample, stride))
         self.group_width = out_c * block.expansion
         for _ in range(1, n_blocks):
             layers.append(block(self.group_width, out_c, radix, cardinality))
-            
+
         return nn.Sequential(*layers)
-    
+
     def forward(self, x):
         skips = []
         x = self.conv1(x)   # initial layer
         x = self.bn1(x)
         x = self.relu(x)
-        x = self.maxpool(x)    
-        
+        x = self.maxpool(x)
+
         # ResNeSt layers
-        x = self.layer1(x); skips.append(x); 
+        x = self.layer1(x); skips.append(x);
         x = self.layer2(x); skips.append(x);
         x = self.layer3(x); skips.append(x);
         x = self.layer4(x); skips.append(x);
-        
+
         return skips
 
 
-def resnest50(in_channels=3, out_channels=10):
-  return ResNeSt('50', Block, [3, 4, 6, 3], img_c=in_channels, n_classes=out_channels)
+def resnest50(in_channels=3):
+  return ResNeSt('50', Block, [3, 4, 6, 3], img_c=in_channels)
 
-def resnest101(in_channels=3, out_channels=10):
-  return ResNeSt('101', Block, [3, 4, 23, 3], img_c=in_channels, n_classes=out_channels)
+def resnest101(in_channels=3):
+  return ResNeSt('101', Block, [3, 4, 23, 3], img_c=in_channels)
 
-def resnest200(in_channels=3, out_channels=10):
-  return ResNeSt('200', Block, [3, 24, 36, 3], img_c=in_channels, n_classes=out_channels)
+def resnest200(in_channels=3):
+  return ResNeSt('200', Block, [3, 24, 36, 3], img_c=in_channels)
 
 def make_resnest(layers="50"):
     if layers == "50":
@@ -214,6 +271,7 @@ def make_resnest(layers="50"):
         return resnest200()
     else:
         raise Exception("Invalid layers for ResNeSt")
+
 
 #Architect of U_net - decoder
 class DoubleConv(nn.Module):
@@ -238,34 +296,38 @@ class URESnet(nn.Module):
         self.encoder = make_resnest(encoder_layers)
         self.ups = nn.ModuleList()
         self.extracters = nn.ModuleList()
-        
+
+        self.bottleneck = DoubleConv(1024, 2048)
         # Four skip layers
-        for feature in [2048, 1024, 512, 256]:
+        for feature in [1024, 512, 256, 128]:
             self.ups.append(nn.ConvTranspose2d(feature, feature//2, kernel_size=2, stride=2))
             self.extracters.append(DoubleConv(feature*2, feature))
-            
-        # Going from 256 to 64 channels ???
+
+
+        # Final layer
         self.final = nn.Sequential(
-            DoubleConv(128, 64),
-            nn.ConvTranspose2d(64, 64, kernel_size=2, stride=2),
-            nn.Conv2d(64, n_classes, kernel_size=1),
+            nn.ConvTranspose2d(64, 64, kernel_size=2, stride=2), #64 -> 64 * 256
+            nn.Conv2d(64, n_classes, kernel_size=1),#64
             nn.Sigmoid()
-        )
-        
+            )
+
     def forward(self, x):
         skips = self.encoder(x)
-        x = skips[-1]
-        skips = skips[::-1] #reverse the list
 
-        for i in range(len(self.ups)):
-            skip = skips[i]
-            x = torch.cat((skip, x), dim = 1)
-            x = self.extracters[i](x)
-            x = self.ups[i](x)
-            
+        x = skips[-1]       #1024 8 8
+        skips = skips[::-1] #reverse the list
+        x = self.ups[0](x)  #512 16 16
+        for i in range(1,len(self.ups)):
+            skip = skips[i]                  #512 16 16 #256 32 32 #128 64 64
+            x = torch.cat((skip, x), dim = 1)# 1024 16 16 # 512 32 32  #256 64 64
+            x = self.extracters[i](x)        # 512 16 16 #256 32 32 #128 64 64
+            x = self.ups[i](x)               #256 32 32 #128 64 64 #64 128 128
+
+
         x = self.final(x)  # goes from [2, 128, 128, 128] --> [2, 10, 256, 256]
-        
+
         return x
-    
+
 def make_uresnet(layers="50"):
     return URESnet(encoder_layers=layers)
+    
