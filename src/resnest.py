@@ -10,13 +10,10 @@ class rSoftmax(nn.Module):
     
     def forward(self, x):
         batch = x.size(0)
-        if self.radix > 1:
-            x = x.view(batch, self.cardinality, self.radix, -1).transpose(1,2)
-            x = x.softmax(dim=1)
-            x = x.reshape(batch, -1)
-        else:
-            x = torch.sigmoid(x)
-        
+        x = x.view(batch, self.cardinality, self.radix, -1).transpose(1,2)
+        x = x.softmax(dim=1)
+        x = x.reshape(batch, -1)
+    
         return x
 
 # Blocks to have ResNet become ResNeSt
@@ -48,11 +45,9 @@ class SplitAttention(nn.Module):
         x = self.relu(x)
         
         batch, rchannel = x.shape[:2]
-        if self.radix > 1:
-            splited = torch.split(x, int(rchannel//self.radix), dim=1)
-            gap = sum(splited)
-        else:
-            gap = x
+
+        splited = torch.split(x, int(rchannel//self.radix), dim=1)
+        gap = sum(splited)
         gap = nn.functional.adaptive_avg_pool2d(gap, 1)
         gap = self.fc1(gap)
         gap = self.bn2(gap)
@@ -61,69 +56,10 @@ class SplitAttention(nn.Module):
         atten = self.fc2(gap)
         atten = self.rsoftmax(atten).view(batch, -1, 1, 1)
         
-        if self.radix > 1:
-            attens = torch.split(atten, int(rchannel//self.radix), dim=1)
-            out = sum([att*split for (att, split) in zip(attens, splited)])
-        else:
-            out = atten * x
+        attens = torch.split(atten, int(rchannel//self.radix), dim=1)
+        out = sum([att*split for (att, split) in zip(attens, splited)])
         
         return out.contiguous()
-    
-class Block(nn.Module):     # ResNeSt block (bottleneck)
-    expansion = 4
-    def __init__(self, in_c, out_c, radix=2, cardinality=1, downsample=None, stride=1):
-        """Initialises the ResNeSt block
-
-        Args:
-            in_c (int): input channels
-            out_c (int): output channels
-            radix (int): number of splits within a cardinal group, denoted R
-            cardinality (int): number of cardinal groups, denoted K
-            downsample (_type_, optional): _description_. Defaults to None.
-            stride (int, optional): stride. Defaults to 1.
-        """
-        super().__init__()
-        group_width = int(out_c * cardinality)
-        self.conv1 = nn.Conv2d(in_c, group_width, kernel_size=1, bias=False)
-        self.bn1 = nn.BatchNorm2d(group_width)
-        self.radix = radix
-        if radix >= 1:  
-            self.conv2 = SplitAttention(group_width, group_width, kernel_size=3, radix=radix, 
-                                        cardinality=cardinality, bias=False, padding=1, stride=stride)
-        else:
-            self.conv2 = nn.Conv2d(group_width, group_width, kernel_size=3, 
-                                   cardinality=cardinality, bias=False, padding=1, stride=stride)
-            self.bn2 = nn.BatchNorm2d(group_width)
-
-        self.conv3 = nn.Conv2d(group_width, out_c*self.expansion, kernel_size=1, bias=False)
-        self.bn3 = nn.BatchNorm2d(out_c*self.expansion)
-
-        self.relu = nn.ReLU(inplace=True)
-        self.downsample = downsample
-        
-
-    def forward(self, x):
-        residual = x
-        x = self.conv1(x)
-        x = self.bn1(x)
-        x = self.relu(x)
-        
-        x = self.conv2(x)
-        if self.radix == 0:
-            x = self.bn2(x)
-            x = self.relu(x)
-        
-        x = self.conv3(x)
-        x = self.bn3(x)
-        
-        if self.downsample is not None:
-            residual = self.downsample(residual)
-
-        x += residual
-        x = self.relu(x)
-        
-        return x
-        
 
 class Block(nn.Module):     # ResNeSt block (bottleneck)
     expansion = 4
@@ -143,13 +79,8 @@ class Block(nn.Module):     # ResNeSt block (bottleneck)
         self.conv1 = nn.Conv2d(in_c, group_width, kernel_size=1, bias=False)
         self.bn1 = nn.BatchNorm2d(group_width)
         self.radix = radix
-        if radix >= 1:  
-            self.conv2 = SplitAttention(group_width, group_width, kernel_size=3, radix=radix, 
-                                        cardinality=cardinality, bias=False, padding=1, stride=stride)
-        else:
-            self.conv2 = nn.Conv2d(group_width, group_width, kernel_size=3, 
-                                   cardinality=cardinality, bias=False, padding=1, stride=stride)
-            self.bn2 = nn.BatchNorm2d(group_width)
+        self.conv2 = SplitAttention(group_width, group_width, kernel_size=3, radix=radix, 
+                                    cardinality=cardinality, bias=False, padding=1, stride=stride)
 
         self.conv3 = nn.Conv2d(group_width, out_c*self.expansion, kernel_size=1, bias=False)
         self.bn3 = nn.BatchNorm2d(out_c*self.expansion)
@@ -182,7 +113,7 @@ class Block(nn.Module):     # ResNeSt block (bottleneck)
 
 
 class ResNeSt(nn.Module): # Encoder
-    def __init__(self, name, block, layers, img_c):
+    def __init__(self, name, block, layers, img_c, drop=0.5):
         """Initialises the ResNeSt model
 
         Args:
@@ -200,6 +131,7 @@ class ResNeSt(nn.Module): # Encoder
         self.conv1 = nn.Conv2d(img_c, self.group_width, kernel_size=7, stride=2, padding=3, bias=False)
         self.bn1 = nn.BatchNorm2d(self.group_width)
         self.relu = nn.ReLU(inplace=True)
+        self.dropout = nn.Dropout2d(drop)
         self.maxpool = nn.MaxPool2d(kernel_size=3, stride=2, padding=1)
 
         # ResNeSt layers
@@ -242,6 +174,7 @@ class ResNeSt(nn.Module): # Encoder
         x = self.conv1(x)   # initial layer
         x = self.bn1(x)
         x = self.relu(x)
+        x = self.dropout(x)
         x = self.maxpool(x)
 
         # ResNeSt layers
@@ -275,7 +208,7 @@ def make_resnest(layers="50"):
 
 #Architect of U_net - decoder
 class DoubleConv(nn.Module):
-    def __init__(self, in_channels, out_channels):
+    def __init__(self, in_channels, out_channels, drop=0.5):
         super(DoubleConv, self).__init__()
         self.conv = nn.Sequential(
             nn.Conv2d(in_channels, out_channels, kernel_size=3, stride=1, padding=1, bias = False),
@@ -284,24 +217,24 @@ class DoubleConv(nn.Module):
             nn.Conv2d(out_channels, out_channels, kernel_size=3, stride=1, padding=1, bias = False),
             nn.BatchNorm2d(out_channels),
             nn.ReLU(inplace=True),
+            nn.Dropout2d(drop)
         )
 
     def forward(self, x):
         return self.conv(x)
 
 class URESnet(nn.Module):
-    def __init__(self, n_classes=10, encoder_layers="50"):
+    def __init__(self, n_classes=10, drop=0.5, encoder_layers="50"):
         super().__init__()
-        self.name = "URESnet"
         self.encoder = make_resnest(encoder_layers)
+        self.name = self.encoder.name
         self.ups = nn.ModuleList()
         self.extracters = nn.ModuleList()
-
-        self.bottleneck = DoubleConv(1024, 2048)
+        
         # Four skip layers
         for feature in [1024, 512, 256, 128]:
             self.ups.append(nn.ConvTranspose2d(feature, feature//2, kernel_size=2, stride=2))
-            self.extracters.append(DoubleConv(feature*2, feature))
+            self.extracters.append(DoubleConv(feature*2, feature, drop))
 
 
         # Final layer
@@ -323,11 +256,10 @@ class URESnet(nn.Module):
             x = self.extracters[i](x)        # 512 16 16 #256 32 32 #128 64 64
             x = self.ups[i](x)               #256 32 32 #128 64 64 #64 128 128
 
-
         x = self.final(x)  # goes from [2, 128, 128, 128] --> [2, 10, 256, 256]
 
         return x
 
-def make_uresnet(layers="50"):
-    return URESnet(encoder_layers=layers)
+def make_uresnet(layers="50", drop=0.5):
+    return URESnet(drop=drop, encoder_layers=layers)
     
