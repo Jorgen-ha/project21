@@ -1,26 +1,26 @@
-# Import necessary libraries
 import torch
 from torch import nn
 import numpy as np
 import torch.optim as optim
 from tqdm import trange
 from datetime import datetime
+# Import from local python files
 from data_process import getDataloaders
-# Import from locally
 from resnest import make_uresnet
 from unet import make_unet
 from u2net import make_u2net, multi_bce_loss_fusion
 
 
 def train(model, train_dataloader, val_dataloader, optimizer, criterion=None, epo_num=10):
-    """Training loop for three models: ResNet, UNet, U2Net
+    """Training loop for three models: ResNeSt, U-Net and U^2-Net
 
     Args:
-        model (nn.Module): The model to train
-        train_dataloader (dataloader): Dataloader holding the training data
-        val_dataloader (dataloader): Dataloader holding the validation data
-        optimizer (optim): Optimizer for the model (SDG or Adam)
-        criterion (nn, optional): loss function for the model. Defaults to None, i.e. multi_bce_loss_fusion.
+        model (nn.Module): the model to train
+        train_dataloader (torch.utils.data.dataloader): dataloader holding the training data
+        val_dataloader (torch.utils.data.dataloader): dataloader holding the validation data
+        optimizer (torch.optim): optimizer for the model (SDG or Adam)
+        criterion (torch.nn, optional): loss function for the model. Defaults to None, 
+        which becomes fusion loss for U^2-Net.
         epo_num (int, optional): Epochs to run for. Defaults to 10.
 
     Returns:
@@ -41,11 +41,11 @@ def train(model, train_dataloader, val_dataloader, optimizer, criterion=None, ep
         train_loss = 0
         model.train()
         for _, (img, mask) in enumerate(train_dataloader):
-            img, mask = img.to(device), mask.to(device) # img.shape [12, 3, 256, 256]
-                                                        # mask.shape [12, 10, 256, 256]
+            img, mask = img.to(device), mask.to(device) # img.shape [<batch_size>, 3, 256, 256]
+                                                        # mask.shape [<batch_size>, 10, 256, 256]
              
             optimizer.zero_grad()
-            if model_name == 'U2NET' or model_name == 'U2NET-small':    # Calculates loss differently
+            if model_name == 'U2NET':    # Calculates loss differently
                 d0, d1, d2, d3, d4, d5, d6 = model(img)
                 _, loss = multi_bce_loss_fusion(d0, d1, d2, d3, d4, d5, d6, mask)
 
@@ -61,7 +61,7 @@ def train(model, train_dataloader, val_dataloader, optimizer, criterion=None, ep
             all_train_iter_loss.append(iter_loss)
             train_loss += iter_loss
         
-        # evaluate and save model each 10 epo
+        # evaluate and save model each 10 epochs
         if np.mod(epo, 10) == 0:
             val_loss = 0
             model.eval()
@@ -69,7 +69,7 @@ def train(model, train_dataloader, val_dataloader, optimizer, criterion=None, ep
                 for _, (img, mask) in enumerate(val_dataloader):
                     img, mask = img.to(device), mask.to(device)
                     optimizer.zero_grad()
-                    if model_name == 'U2NET' or model_name == 'U2NET-small':
+                    if model_name == 'U2NET':
                         d0, d1, d2, d3, d4, d5, d6 = model(img)
                         _, loss = multi_bce_loss_fusion(d0, d1, d2, d3, d4, d5, d6, mask)
                     else:
@@ -100,11 +100,16 @@ def train(model, train_dataloader, val_dataloader, optimizer, criterion=None, ep
 
 
 if __name__ == "__main__":
-    tload, vload = getDataloaders('../data/small_dataset.npy', batch_size=2)
-    model = make_uresnet()                                # <<< CHANGE MODEL HERE!! make_uresnest(enc_layers="50"/"101"/"200"),
-                                                          # make_unet() or make_u2net()
-    criterion = nn.BCELoss()                              # <<< CHANGE LOSS HERE!! nn.CrossEntropyLoss() or nn.BCELoss()
-    optimizer = optim.SGD(model.parameters(), lr=1e-2, momentum=0.7) # <<< CHANGE OPTIMIZER HERE!! optim.Adam() or optim.SGD()
-    epochs = 100                                          # <<< CHANGE EPOCHS HERE!!
+    tload, vload = getDataloaders('../data/train.npy', batch_size=2) # <<< CHANGE BATCH SIZE HERE!!
     
+    # Comment out the such that only one model is trained at a time
+    model = make_unet()                               
+    # model = make_uresnet(layers="50")
+    # model = make_u2net()                              
+    
+    criterion = nn.BCELoss()                                         # <<< CHANGE LOSS HERE!!
+    optimizer = optim.SGD(model.parameters(), lr=1e-2, momentum=0.7) # <<< CHANGE OPTIMIZER HERE!! 
+    epochs = 100                                                     # <<< CHANGE EPOCHS HERE!!
+    
+    # Train the model
     model = train(model, tload, vload, optimizer, criterion=criterion, epo_num=epochs) 

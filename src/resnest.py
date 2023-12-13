@@ -1,6 +1,15 @@
 import torch
 import torch.nn as nn
 
+"""
+With U-Net inspiration from https://www.youtube.com/watch?v=IHq1t7NxS8k&ab_channel=AladdinPersson
+His implementation can be found here:  
+https://github.com/aladdinpersson/Machine-Learning-Collection/tree/master/ML/Pytorch/image_segmentation/semantic_segmentation_unet
+
+ResNeSt inspiration from the original paper, which github can be found here:
+https://github.com/zhanghang1989/ResNeSt/
+"""
+
 class rSoftmax(nn.Module):
     """rSoftmax module, as per the paper"""
     def __init__(self, radix, cardinality):
@@ -16,15 +25,20 @@ class rSoftmax(nn.Module):
     
         return x
 
-# Blocks to have ResNet become ResNeSt
+# Split-attention block, as per the paper
 class SplitAttention(nn.Module):
     def __init__(self, in_c, out_c, kernel_size, radix=2, cardinality=1, bias=True, stride=1, padding=0):
         """Initialises a SplitAttention block, as part of the ResNeSt block
 
         Args:
             in_c (int): input channels
+            out_c (int): output channels
+            kernel_size (int): kernel size
             radix (int): number of splits within a cardinal group, denoted r
             cardinality (int): number of feature map groups, denoted k
+            bias (bool, optional): bias. Defaults to True.
+            stride (int, optional): stride. Defaults to 1.
+            padding (int, optional): padding. Defaults to 0.
         """
         super().__init__()
         self.radix = radix
@@ -117,10 +131,11 @@ class ResNeSt(nn.Module): # Encoder
         """Initialises the ResNeSt model
 
         Args:
+            name (str): name of the model
             block (nn.Module): The ResNeSt block
             layers (list): holding the number of blocks in each layer
             img_c (int): input channels
-            n_classes (int): output classes
+            drop (float): dropout rate
         """
         self.cardinality = 1
         self.group_width = 64
@@ -146,7 +161,7 @@ class ResNeSt(nn.Module): # Encoder
 
         Args:
             block (Block): convolutional block as per the ResNet architecture
-            n_res_blocks (int): number of residual blocks, number of times blocks are used
+            n_blocks (int): number of residual blocks, number of times blocks are used
             out_c (int): number of channels when done with this layer
             radix (int): number of splits within a cardinal group, denoted R
             cardinality (int): number of cardinal groups, denoted K
@@ -187,15 +202,29 @@ class ResNeSt(nn.Module): # Encoder
 
 
 def resnest50(in_channels=3):
-  return ResNeSt('50', Block, [3, 4, 6, 3], img_c=in_channels)
+    """Function making a ResNeSt model with 50 layers"""
+    return ResNeSt('50', Block, [3, 4, 6, 3], img_c=in_channels)
 
 def resnest101(in_channels=3):
-  return ResNeSt('101', Block, [3, 4, 23, 3], img_c=in_channels)
+    """Function making a ResNeSt model with 101 layers"""
+    return ResNeSt('101', Block, [3, 4, 23, 3], img_c=in_channels)
 
 def resnest200(in_channels=3):
-  return ResNeSt('200', Block, [3, 24, 36, 3], img_c=in_channels)
+    """Function making a ResNeSt model with 200 layers"""
+    return ResNeSt('200', Block, [3, 24, 36, 3], img_c=in_channels)
 
 def make_resnest(layers="50"):
+    """Function making a ResNeSt model with the specified number of layers
+
+    Args:
+        layers (str, optional): number of layers ("50", "101", "200"). Defaults to "50".
+
+    Raises:
+        Exception: if the number of layers is not one of the three options
+
+    Returns:
+        nn.module: ResNeSt model 
+    """
     if layers == "50":
         return resnest50()
     elif layers == "101":
@@ -206,8 +235,8 @@ def make_resnest(layers="50"):
         raise Exception("Invalid layers for ResNeSt")
 
 
-#Architect of U_net - decoder
-class DoubleConv(nn.Module):
+# Architecture of the U-Net decoder, using ResNeSt as encoder
+class DoubleConv(nn.Module): # Added dropout, else similar to U-Net
     def __init__(self, in_channels, out_channels, drop=0.5):
         super(DoubleConv, self).__init__()
         self.conv = nn.Sequential(
@@ -217,13 +246,13 @@ class DoubleConv(nn.Module):
             nn.Conv2d(out_channels, out_channels, kernel_size=3, stride=1, padding=1, bias = False),
             nn.BatchNorm2d(out_channels),
             nn.ReLU(inplace=True),
-            nn.Dropout2d(drop)
+            nn.Dropout2d(drop) 
         )
 
     def forward(self, x):
         return self.conv(x)
 
-class URESnet(nn.Module):
+class URESnet(nn.Module): # URESnet - using ResNeSt as encoder and U-Net as decoder
     def __init__(self, n_classes=10, drop=0.5, encoder_layers="50"):
         super().__init__()
         self.encoder = make_resnest(encoder_layers)
@@ -247,16 +276,16 @@ class URESnet(nn.Module):
     def forward(self, x):
         skips = self.encoder(x)
 
-        x = skips[-1]       #1024 8 8
-        skips = skips[::-1] #reverse the list
-        x = self.ups[0](x)  #512 16 16
-        for i in range(1,len(self.ups)):
-            skip = skips[i]                  #512 16 16 #256 32 32 #128 64 64
-            x = torch.cat((skip, x), dim = 1)# 1024 16 16 # 512 32 32  #256 64 64
-            x = self.extracters[i](x)        # 512 16 16 #256 32 32 #128 64 64
-            x = self.ups[i](x)               #256 32 32 #128 64 64 #64 128 128
+        x = skips[-1]                       # loads the last skip connection
+        skips = skips[::-1]                 # reverses the list
+        x = self.ups[0](x)                  # performs the first upsampling
+        for i in range(1,len(self.ups)):    # iterates through the rest of the upsamplings
+            skip = skips[i]                  
+            x = torch.cat((skip, x), dim = 1)
+            x = self.extracters[i](x)        
+            x = self.ups[i](x)               
 
-        x = self.final(x)  # goes from [2, 128, 128, 128] --> [2, 10, 256, 256]
+        x = self.final(x)  
 
         return x
 
