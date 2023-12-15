@@ -38,20 +38,20 @@ For this project, three models have been implemented and trained on the provided
 #### U-Net
 <img src="images/unet.png" width="500" height="400"/>
 
-Our implementation of the U-Net model follows the original, as described in [this paper](). It consists of a symmetric encoder-decoder structure, giving the U shape as seen above. The network utilises *skip connections* in order to be able to both extract features progressively moving down the downsampling path, as well as preserving as much spatial information as possible.
+Our implementation of the U-Net model follows the original, as described in [this paper](https://arxiv.org/abs/1505.04597). It consists of a symmetric encoder-decoder structure, giving the U shape as seen above. The network utilises *skip connections* in order to be able to both extract features progressively moving down the downsampling path, as well as preserving as much spatial information as possible.
 
 #### ResNeSt
 <img src="images/resnest.png" width="500" height="400"/>
 
-Our second model replaces the encoder, or the downsampling path, in the original U-Net to rather use a *Split-attention network* (ResNeSt). This architecture stacks several blocks as seen above ResNet style, to ultimately give what is known as ResNeSt. The implementation is inspired by the [original paper](), with the addition of skip connections needed for the U-Net decoder. 
+Our second model replaces the encoder, or the downsampling path, in the original U-Net to rather use a *Split-attention network* (ResNeSt). This architecture stacks several blocks as seen above ResNet style, to ultimately give what is known as ResNeSt. The implementation is inspired by the [original paper](https://arxiv.org/abs/2004.08955), with the addition of skip connections needed for the U-Net decoder. 
 
 #### U$^2$-Net 
 <img src="images/u2net.png" width="500" height="400"/>
 
-The final model is also implemented like [the original](), with only minor changes. It consists of two nested U-structures, with the aim of extracting even finer details and relationships in the data - ideal for segmentation tasks. 
-
+The final model is also implemented like [the original](https://arxiv.org/abs/2005.09007), with only minor changes. It consists of two nested U-structures, with the aim of extracting even finer details and relationships in the data - ideal for segmentation tasks. 
+***
 ### Results
-<img src="images/ex_result.png" width="500" height="400"/>
+<img src="images/ex_result.png" width="550" height="400"/>
 
 | **Model**   | **mIoU**  | **Pixel accuracy** | **Runtime** |
 | ----------- | --------- | ------------------ | ----------- |
