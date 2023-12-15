@@ -32,9 +32,10 @@ python3 src/download_extract_models.py
 **Note:** the trained models require **965MB** of free disk space. 
 
 This will first download the trained models, before extracting them, creating the folder `trained_models` where they will all be located. 
+
 **Important!** This step needs to be performed in order to be able to run the evaluation notebook. 
 
-4. Finally, run the notebook called `evaluation.ipynb`, where you'll be able to evaluate each model's performance in the final cell, as well as viewing its prediction on one of the images from the test set. 
+4. Finally, run the notebook called `evaluation.ipynb`, where you'll be able to evaluate each model's performance in the final cell, as well as view its prediction on one of the images from the test set. 
 ***
 ### Technical details
 For this project, three models have been implemented and trained on the provided dataset: **U-Net**, U-Net with **ResNeSt** as encoder, and $\mathbf{U^2}$**-Net**.
